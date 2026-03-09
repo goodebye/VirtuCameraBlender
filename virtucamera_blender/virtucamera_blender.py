@@ -61,6 +61,30 @@ class VirtuCameraBlender(VCBase):
 
     # -- Utility Functions ------------------------------------
 
+    def _get_action_fcurves(self, animation_data):
+        """Return fcurves for the active action slot (Blender 5.0 channelbag API)."""
+        if not animation_data or not animation_data.action or not animation_data.action_slot:
+            return []
+        for layer in animation_data.action.layers:
+            for strip in layer.strips:
+                channelbag = strip.channelbag(animation_data.action_slot)
+                if channelbag:
+                    return channelbag.fcurves
+        return []
+
+    def _remove_action_fcurves(self, animation_data, predicate):
+        """Remove fcurves matching predicate from the active action slot."""
+        if not animation_data or not animation_data.action or not animation_data.action_slot:
+            return
+        for layer in animation_data.action.layers:
+            for strip in layer.strips:
+                channelbag = strip.channelbag(animation_data.action_slot)
+                if channelbag:
+                    to_remove = [fcu for fcu in channelbag.fcurves if predicate(fcu)]
+                    for fcu in to_remove:
+                        channelbag.fcurves.remove(fcu)
+                    return
+
     def camera_rect_changed(self, offset_value_x, offset_value_y, zoom_value, region_rect, camera_aspect_ratio):
         rect_data = (offset_value_x, offset_value_y, zoom_value, region_rect, camera_aspect_ratio)
         if self.last_rect_data != rect_data:
@@ -346,20 +370,15 @@ class VirtuCameraBlender(VCBase):
         """
 
         camera = bpy.data.objects[camera_name]
-        
-        transform_has_keys = False
-        if camera.animation_data and camera.animation_data.action:
-            for fcu in camera.animation_data.action.fcurves:
-                if fcu.data_path in self.TRANSFORM_CHANNELS:
-                    transform_has_keys = True
-                    break
-        
-        focal_length_has_keys = False
-        if camera.data.animation_data and camera.data.animation_data.action:
-            for fcu in camera.data.animation_data.action.fcurves:
-                if fcu.data_path == "lens":
-                    focal_length_has_keys = True
-                    break
+
+        transform_has_keys = any(
+            fcu.data_path in self.TRANSFORM_CHANNELS
+            for fcu in self._get_action_fcurves(camera.animation_data)
+        )
+        focal_length_has_keys = any(
+            fcu.data_path == "lens"
+            for fcu in self._get_action_fcurves(camera.data.animation_data)
+        )
 
         return (transform_has_keys, focal_length_has_keys)
 
@@ -563,16 +582,8 @@ class VirtuCameraBlender(VCBase):
         """
 
         camera = bpy.data.objects[camera_name]
-        if camera.animation_data and camera.animation_data.action:
-            for fcu in camera.animation_data.action.fcurves:
-                if fcu.data_path in self.TRANSFORM_CHANNELS:
-                    camera.animation_data.action.fcurves.remove(fcu)
-        
-        if camera.data.animation_data and camera.data.animation_data.action:
-            for fcu in camera.data.animation_data.action.fcurves:
-                if fcu.data_path == "lens":
-                    camera.data.animation_data.action.fcurves.remove(fcu)
-                    break
+        self._remove_action_fcurves(camera.animation_data, lambda fcu: fcu.data_path in self.TRANSFORM_CHANNELS)
+        self._remove_action_fcurves(camera.data.animation_data, lambda fcu: fcu.data_path == "lens")
 
 
     def create_new_camera(self, vcserver):
@@ -915,7 +926,10 @@ class VIEW3D_OT_virtucamera_start(bpy.types.Operator):
         server.write_qr_image_png(file_path, 3)
         state.custom_icons.clear()
         state.custom_icons.load('qr_image', file_path, 'IMAGE')
-        state.contexts['start'] = context.copy()
+        state.contexts['start'] = {
+            'region': context.region,
+            'space_data': context.space_data,
+        }
         return {'FINISHED'}
 
 class VIEW3D_OT_virtucamera_stop(bpy.types.Operator):
@@ -960,11 +974,17 @@ class GRAPH_OT_virtucamera_euler_filter(bpy.types.Operator):
         try:
             camera.select_set(True)
             area.type = 'GRAPH_EDITOR'
-            override = context.copy()
-            override['area'] = area
-            fcurves = [fcu for fcu in camera.animation_data.action.fcurves if fcu.data_path == 'rotation_euler']
-            override['selected_visible_fcurves'] = fcurves
-            bpy.ops.graph.euler_filter(override)
+            fcurves = []
+            adt = camera.animation_data
+            if adt and adt.action and adt.action_slot:
+                for layer in adt.action.layers:
+                    for strip in layer.strips:
+                        channelbag = strip.channelbag(adt.action_slot)
+                        if channelbag:
+                            fcurves = [fcu for fcu in channelbag.fcurves if fcu.data_path == 'rotation_euler']
+                            break
+            with context.temp_override(area=area, selected_visible_fcurves=fcurves):
+                bpy.ops.graph.euler_filter()
         except:
             area.type = prev_area_type
             camera.select_set(prev_cam_select)

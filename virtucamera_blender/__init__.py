@@ -26,7 +26,7 @@ bl_info = {
     "name" : "VirtuCamera",
     "author" : "The Weird Byte",
     "description" : "Live camera motion capture",
-    "blender" : (2, 80, 0),
+    "blender" : (5, 0, 0),
     "version" : (1, 1, 1),
     "location" : "3D View > VirtuCamera",
     "warning" : "",
@@ -51,7 +51,10 @@ def register():
     bpy.types.Scene.virtucamera = bpy.props.PointerProperty(type=VirtuCameraState)
 
 def unregister():
-    bpy.context.scene.virtucamera.server.stop_serving()
+    try:
+        bpy.context.scene.virtucamera.server.stop_serving()
+    except Exception:
+        pass
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
     del bpy.types.Scene.virtucamera
