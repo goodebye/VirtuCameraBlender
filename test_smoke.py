@@ -24,7 +24,15 @@ Dynamic reload during development (run in Blender's Python console or Text Edito
     #   print("Reloaded OK")
 """
 
+import os
 import sys
+
+# Allow Blender to find the addon when the script is run directly from the
+# repo root (blender --background --python test_smoke.py).
+_repo_dir = os.path.dirname(os.path.abspath(__file__))
+if _repo_dir not in sys.path:
+    sys.path.insert(0, _repo_dir)
+
 import bpy
 
 ADDON_MODULE = "virtucamera_blender"

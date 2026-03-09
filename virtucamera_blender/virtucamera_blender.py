@@ -23,6 +23,7 @@
 # EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 # Python modules
+import asyncio
 import os
 import sys
 import math
@@ -62,28 +63,40 @@ class VirtuCameraBlender(VCBase):
     # -- Utility Functions ------------------------------------
 
     def _get_action_fcurves(self, animation_data):
-        """Return fcurves for the active action slot (Blender 5.0 channelbag API)."""
-        if not animation_data or not animation_data.action or not animation_data.action_slot:
+        """Return fcurves for the active action, supporting both the legacy flat
+        API (Blender < 4.4) and the layered channelbag API (Blender 4.4+)."""
+        if not animation_data or not animation_data.action:
             return []
-        for layer in animation_data.action.layers:
-            for strip in layer.strips:
-                channelbag = strip.channelbag(animation_data.action_slot)
-                if channelbag:
-                    return channelbag.fcurves
-        return []
+        action = animation_data.action
+        # Layered animation API: Blender 4.4+
+        if hasattr(action, 'layers') and hasattr(animation_data, 'action_slot') and animation_data.action_slot:
+            for layer in action.layers:
+                for strip in layer.strips:
+                    channelbag = strip.channelbag(animation_data.action_slot)
+                    if channelbag:
+                        return channelbag.fcurves
+            return []
+        # Legacy flat API: Blender < 4.4
+        return action.fcurves
 
     def _remove_action_fcurves(self, animation_data, predicate):
-        """Remove fcurves matching predicate from the active action slot."""
-        if not animation_data or not animation_data.action or not animation_data.action_slot:
+        """Remove fcurves matching predicate, supporting both legacy and layered APIs."""
+        if not animation_data or not animation_data.action:
             return
-        for layer in animation_data.action.layers:
-            for strip in layer.strips:
-                channelbag = strip.channelbag(animation_data.action_slot)
-                if channelbag:
-                    to_remove = [fcu for fcu in channelbag.fcurves if predicate(fcu)]
-                    for fcu in to_remove:
-                        channelbag.fcurves.remove(fcu)
-                    return
+        action = animation_data.action
+        # Layered animation API: Blender 4.4+
+        if hasattr(action, 'layers') and hasattr(animation_data, 'action_slot') and animation_data.action_slot:
+            for layer in action.layers:
+                for strip in layer.strips:
+                    channelbag = strip.channelbag(animation_data.action_slot)
+                    if channelbag:
+                        for fcu in [f for f in channelbag.fcurves if predicate(f)]:
+                            channelbag.fcurves.remove(fcu)
+                        return
+        else:
+            # Legacy flat API: Blender < 4.4
+            for fcu in [f for f in action.fcurves if predicate(f)]:
+                action.fcurves.remove(fcu)
 
     def camera_rect_changed(self, offset_value_x, offset_value_y, zoom_value, region_rect, camera_aspect_ratio):
         rect_data = (offset_value_x, offset_value_y, zoom_value, region_rect, camera_aspect_ratio)
@@ -916,6 +929,14 @@ class VIEW3D_OT_virtucamera_start(bpy.types.Operator):
         return not server.is_serving
 
     def execute(self, context):
+        # Python 3.10+ (Blender 4.1+) no longer creates an implicit asyncio event
+        # loop in non-main threads or threads without one set. Ensure one exists
+        # before starting the server so VCServer's async internals don't fail.
+        try:
+            asyncio.get_event_loop()
+        except RuntimeError:
+            asyncio.set_event_loop(asyncio.new_event_loop())
+
         state = context.scene.virtucamera
         server = state.server
         server.start_serving(state.tcp_port)
@@ -976,13 +997,17 @@ class GRAPH_OT_virtucamera_euler_filter(bpy.types.Operator):
             area.type = 'GRAPH_EDITOR'
             fcurves = []
             adt = camera.animation_data
-            if adt and adt.action and adt.action_slot:
-                for layer in adt.action.layers:
-                    for strip in layer.strips:
-                        channelbag = strip.channelbag(adt.action_slot)
-                        if channelbag:
-                            fcurves = [fcu for fcu in channelbag.fcurves if fcu.data_path == 'rotation_euler']
-                            break
+            if adt and adt.action:
+                action = adt.action
+                if hasattr(action, 'layers') and hasattr(adt, 'action_slot') and adt.action_slot:
+                    for layer in action.layers:
+                        for strip in layer.strips:
+                            channelbag = strip.channelbag(adt.action_slot)
+                            if channelbag:
+                                fcurves = [fcu for fcu in channelbag.fcurves if fcu.data_path == 'rotation_euler']
+                                break
+                else:
+                    fcurves = [fcu for fcu in action.fcurves if fcu.data_path == 'rotation_euler']
             with context.temp_override(area=area, selected_visible_fcurves=fcurves):
                 bpy.ops.graph.euler_filter()
         except:

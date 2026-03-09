@@ -26,7 +26,7 @@ bl_info = {
     "name" : "VirtuCamera",
     "author" : "The Weird Byte",
     "description" : "Live camera motion capture",
-    "blender" : (5, 0, 0),
+    "blender" : (4, 0, 0),
     "version" : (1, 1, 1),
     "location" : "3D View > VirtuCamera",
     "warning" : "",
